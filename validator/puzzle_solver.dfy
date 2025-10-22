@@ -30,17 +30,40 @@ const G: seq<seq<bool>> := [
 const T := {[1, 1], [1, 3]}
 
 // current state of an object in the puzzle
-datatype ObjState = ObjState(pos: seq<nat>, heading: Heading, t: ObjType)
+datatype ObjState = ObjState(pos: seq<int>, heading: Heading, t: ObjType, next_pos: seq<int>)
 
 // current state of the whole puzzle
 datatype PuzzleState = PuzzleState(player:ObjState, statues:seq<ObjState>)
 
 predicate ValidObjState(s: ObjState)
 {
-    // note that an object's heading doesn't matter here.
-    |s.pos| == 2 && // position only has two values (y and x)
-    s.pos[0] < |G| &&  // y coordinate is valid
-    (forall i:nat | i < |G| :: s.pos[1] < |G[i]|) // x coordinate is valid
+    InBounds(s.pos) &&
+    Live(s.pos) &&
+    ValidNextPos(s.pos, s.next_pos, s.heading)
+}
+
+predicate InBounds(pos: seq<int>)
+{
+    |pos| == 2 &&
+    0 <= pos[0] < |G| &&
+    0 <= pos[1] < |G[pos[0]]|
+}
+
+predicate Live(pos: seq<int>)
+{
+    InBounds(pos) &&
+    G[pos[0]][pos[1]]
+}
+
+predicate ValidNextPos(p: seq<int>, p': seq<int>, heading: Heading)
+{
+    Live(p) && Live(p') && // both positions are on valid tiles
+    (match(heading) { // the next space either represents a jump...
+        case Up => p'[0] == p[0] - 1 && p'[1] == p[1]
+        case Down => p'[0] == p[0] + 1 && p'[1] == p[1]
+        case Left => p'[0] == p[0] && p'[1] == p[1] - 1
+        case Right => p'[0] == p[0] && p'[1] == p[1] + 1
+    } || p' == p) // or it stays the same
 }
 
 predicate InitialPuzzleState(p: PuzzleState)
@@ -70,6 +93,7 @@ predicate SolvedPuzzleState(p: PuzzleState)
 predicate TurnObject(direction: TurnDirection, o: ObjState, o': ObjState)
     requires ValidObjState(o)
 {
+    o'.pos == o.pos && // statue positions remain the same
     match o.heading {
         case Up => 
             (direction == Clockwise && o'.heading == Right) ||
@@ -83,40 +107,16 @@ predicate TurnObject(direction: TurnDirection, o: ObjState, o': ObjState)
         case Right => 
             (direction == Clockwise && o'.heading == Down) ||
             (direction == Counterclockwise && o'.heading == Up)
-    }
-}
-
-predicate Next(o: ObjState, o': ObjState)
-    requires ValidObjState(o)
-{
-    |o.pos| == |o'.pos| && 
-    o.heading == o'.heading && o.t == o'.t && // heading and type never change while moving
-    match o.heading {
-        case Up => 
-            if o.pos[0] > 0 && G[o.pos[0] - 1][o.pos[1]] 
-                then o'.pos[0] == o.pos[0] - 1 && o'.pos[1] == o.pos[1] 
-            else o'.pos == o.pos
-        case Down => 
-            if o.pos[0] < |G| - 1 && G[o.pos[0] + 1][o.pos[1]] 
-                then o'.pos[0] == o.pos[0] + 1 && o'.pos[1] == o.pos[1] 
-            else o'.pos == o.pos
-        case Left => 
-            if o.pos[1] > 0  && G[o.pos[0]][o.pos[1] - 1] 
-                then o'.pos[1] == o.pos[1] - 1 && o'.pos[0] == o.pos[0] 
-            else o'.pos == o.pos
-        case Right => 
-            if o.pos[1] < |G[o.pos[0]]| - 1 && G[o.pos[0]][o.pos[1] + 1] 
-                then o'.pos[1] == o.pos[1] + 1 && o'.pos[0] == o.pos[0] 
-            else o'.pos == o.pos
-    }
+    } &&
+    ValidNextPos(o'.pos, o'.next_pos, o'.heading) // o' has a next position consistent with its heading
 }
 
 // shows whether two objects will bump on the next jump
 // two objects bump if they attempt to jump to the same destination or they are facing each other and adjacent.
-ghost predicate Bumping(o1: ObjState, o2: ObjState)
+predicate Bumping(o1: ObjState, o2: ObjState)
     requires ValidObjState(o1) && ValidObjState(o2)
 {
-    (Next(o1, o2) && Next(o2, o1)) // both objects have the other's current position as their next destination
+    (o1.next_pos == o2.pos && o2.next_pos == o1.pos) // both objects have the other's current position as their next destination
     || SameDestination(o1, o2) // both objects will jump to the same tile
 }
 
@@ -128,10 +128,10 @@ predicate Facing(o1: ObjState, o2: ObjState)
         (i.pos[0] == j.pos[0] && i.pos[1] < j.pos[1] && i.heading == Right && j.heading == Left) // same row
 }
 
-ghost predicate SameDestination(o1: ObjState, o2: ObjState)
+predicate SameDestination(o1: ObjState, o2: ObjState)
     requires ValidObjState(o1) && ValidObjState(o2)
 {
-    exists o1': ObjState, o2': ObjState :: o1'.pos == o2'.pos && Next(o1, o1') && Next(o2, o2')
+    o1.next_pos == o2.next_pos
 }
 
 predicate Adjacent(o1: ObjState, o2: ObjState)
@@ -152,17 +152,18 @@ predicate Open(s: seq<nat>, p: PuzzleState)
 }
 
 // What is true after executing one jump forward?
-ghost predicate Move(p: PuzzleState, p': PuzzleState)
+predicate Move(p: PuzzleState, p': PuzzleState)
     requires ValidPuzzleState(p)
 {
     |p.statues| == |p'.statues| && // p' doesn't add or remove statues
-    Open(p'.player.pos, p) && // p.player has a valid spot to go
-        Next(p.player, p'.player) && 
+    p'.player.pos == p.player.next_pos && // p.player has a valid spot to go
+        Open(p'.player.pos, p) && 
         p'.player.pos != p.player.pos &&
     (forall i:nat, j:nat | i < |p.statues| && j < |p.statues| && i != j :: 
-        ((Bumping(p.statues[i], p.statues[j]) ==> // statues are bumping, which causes them to be in the same position on the next state
+        ((Bumping(p.statues[i], p.statues[j]) && // statues are bumping, which causes them to be in the same position on the next state
             p'.statues[i] == p.statues[i] && p'.statues[j] == p.statues[j]) ||
-        (Next(p.statues[i], p'.statues[i]) && Next(p.statues[j], p'.statues[j]))) && // p' gives valid next position for all statues
+        (!Bumping(p.statues[i], p.statues[j]) && p'.statues[i].pos == p.statues[i].next_pos && // statues are not bumping, so they move to their next positions
+            p'.statues[j].pos == p.statues[j].next_pos)) && 
         (p'.player.pos != p'.statues[i].pos && p'.player.pos != p'.statues[j].pos)) // p' does not crush the player under a statue
 }
 
@@ -192,8 +193,10 @@ method SanityCheck(p: PuzzleState) returns (solved: PuzzleState)
 {
     solved := p;
     // TODO: Fix all errors here, and you have successfully done it!
-    // var p':PuzzleState :| Turn(Counterclockwise, p, p');
-    // solved := p';
+    var p':PuzzleState;
+    
+    p' :| Turn(Counterclockwise, p, p');
+    solved := p';
     // p' :| Move(solved, p');
     // solved := p';
     // p' :| Turn(Counterclockwise, p, p');
